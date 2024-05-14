@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <title>医疗数据共享 DApp</title>
+    <script src="https://cdn.jsdelivr.net/gh/ethereum/web3.js@1.3.0/dist/web3.min.js"></script>
+    <!-- 引入加密库，例如 CryptoJS -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.1.1/crypto-js.min.js"></script>
+    <style>
+        #result {
+            margin-top: 20px;
+        }
+        #feedback {
+            margin-top: 20px;
+            color: blue;
+        }
+    </style>
+</head>
+<body>
+    <h1>医疗数据共享 DApp</h1>
+    <button onclick="connectWallet()">连接钱包</button>
+    <div id="account"></div>
+    
+    <h2>设置患者数据</h2>
+    <label for="patientId">患者ID:</label>
+    <input type="number" id="patientId"><br>
+    <label for="name">姓名:</label>
+    <input type="text" id="name"><br>
+    <label for="age">年龄:</label>
+    <input type="number" id="age"><br>
+    <label for="condition">健康状况:</label>
+    <input type="text" id="condition"><br>
+    <button onclick="setPatientData()">设置患者数据</button>
+    
+    <h2>授权访问</h2>
+    <label for="authPatientId">患者ID:</label>
+    <input type="number" id="authPatientId"><br>
+    <label for="userAddress">用户地址:</label>
+    <input type="text" id="userAddress"><br>
+    <button onclick="authorizeAccess()">授权访问</button>
+    <button onclick="revokeAccess()">撤销访问</button>
+    
+    <h2>获取患者数据</h2>
+    <label for="getPatientId">患者ID:</label>
+    <input type="number" id="getPatientId"><br>
+    <button onclick="getPatientData()">获取患者数据</button>
+
+    <div id="result"></div>
+    <div id="feedback"></div>
+    
+    <script>
+        let web3;
+        let contract;
+        let proxyReEncryptionKey;
+        const contractAddress = "0xaFfB232e82Fc9E5cCa134C07a6dA52d01A02041d";  // 更新后的合约地址
+
+        async function fetchABI() {
+            const response = await fetch('MedicalDataABI.json');  // 确保ABI文件路径正确
+            const data = await response.json();
+            return data;
+        }
+
+        async function connectWallet() {
+            if (window.ethereum) {
+                web3 = new Web3(window.ethereum);
+                try {
+                    await window.ethereum.enable();
+                    const accounts = await web3.eth.getAccounts();
+                    document.getElementById('account').innerText = `已连接账户: ${accounts[0]}`;
+                    const contractABI = await fetchABI();
+                    contract = new web3.eth.Contract(contractABI, contractAddress);
+                } catch (error) {
+                    console.error("用户拒绝了账户访问请求");
+                }
+            } else {
+                console.log('未检测到以太坊浏览器。请考虑尝试MetaMask!');
+            }
+        }
+
+        function generateSymmetricKey() {
+            return CryptoJS.lib.WordArray.random(16).toString();
+        }
+
+        function encryptData(data, key) {
+            return CryptoJS.AES.encrypt(data, key).toString();
+        }
+
+        function decryptData(encryptedData, key) {
+            const bytes = CryptoJS.AES.decrypt(encryptedData, key);
+            return bytes.toString(CryptoJS.enc.Utf8);
+        }
+
+        function generateProxyReEncryptionKey() {
+            proxyReEncryptionKey = CryptoJS.lib.WordArray.random(16).toString();
+            console.log(`代理重加密密钥: ${proxyReEncryptionKey}`);
+            saveKeyToFile(proxyReEncryptionKey);
+        }
+
+        function saveKeyToFile(key) {
+            const blob = new Blob([key], { type: 'text/plain;charset=utf-8' });
+            const link = document.createElement('a');
+            link.href = URL.createObjectURL(blob);
+            link.download = 'proxyReEncryptionKey.txt';
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+        }
+
+        // 模拟代理重加密过程
+        function proxyReEncrypt(encryptedKey, proxyKey) {
+            // 这里模拟代理重加密过程，实际应使用代理重加密算法
+            return decryptData(encryptedKey, proxyKey);
+        }
+
+        async function setPatientData() {
+            const accounts = await web3.eth.getAccounts();
+            const patientId = document.getElementById('patientId').value;
+            const name = document.getElementById('name').value;
+            const age = document.getElementById('age').value;
+            const condition = document.getElementById('condition').value;
+            const symmetricKey = generateSymmetricKey(); // 生成对称密钥
+            const dataToEncrypt = `${name},${age},${condition}`;
+            const encryptedData = encryptData(dataToEncrypt, symmetricKey); // 加密数据
+            const dataHash = web3.utils.soliditySha3(name, age, condition, encryptedData);
+            
+            if (!patientId || !name || !age || !condition) {
+                document.getElementById('feedback').innerText = "请完整填写所有字段";
+                return;
+            }
+
+            contract.methods.setPatientData(
+                patientId, 
+                name, 
+                age, 
+                condition, 
+                encryptedData,
+                dataHash
+            ).send({ from: accounts[0] })
+            .on('transactionHash', function(hash){
+                document.getElementById('feedback').innerText = `交易已发送，哈希值: ${hash}`;
+            })
+            .on('receipt', function(receipt){
+                document.getElementById('feedback').innerText = "交易成功";
+                console.log("患者数据已设置", receipt);
+            })
+            .on('error', function(error, receipt) {
+                document.getElementById('feedback').innerText = "交易失败";
+                console.error("交易失败", error, receipt);
+            });
+
+            // 用代理重加密算法将密钥加密并发送给系统管理员
+            const adminPublicKey = '系统管理员的公钥'; // 示例
+            const encryptedSymmetricKey = encryptData(symmetricKey, adminPublicKey);
+            console.log(`对称密钥已加密并发送给系统管理员: ${encryptedSymmetricKey}`);
+        }
+
+        async function authorizeAccess() {
+            const accounts = await web3.eth.getAccounts();
+            const patientId = document.getElementById('authPatientId').value;
+            const userAddress = document.getElementById('userAddress').value;
+
+            console.log("Patient ID:", patientId);
+            console.log("User Address:", userAddress);
+            
+            if (!patientId || !userAddress) {
+                document.getElementById('feedback').innerText = "请完整填写所有字段";
+                return;
+            }
+
+            if (!web3.utils.isAddress(userAddress)) {
+                document.getElementById('feedback').innerText = "无效的用户地址";
+                return;
+            }
+
+            try {
+                await contract.methods.authorizeAccess(patientId, userAddress).estimateGas({ from: accounts[0] });
+            } catch (error) {
+                document.getElementById('feedback').innerText = "无法估算Gas费用，可能存在错误";
+                console.error("估算Gas费用时出错:", error);
+                return;
+            }
+
+            contract.methods.authorizeAccess(patientId, userAddress).send({ from: accounts[0] })
+            .on('transactionHash', function(hash){
+                document.getElementById('feedback').innerText = `交易已发送，哈希值: ${hash}`;
+            })
+            .on('receipt', function(receipt){
+                document.getElementById('feedback').innerText = "授权成功";
+                console.log("访问权限已授权", receipt);
+            })
+            .on('error', function(error, receipt) {
+                document.getElementById('feedback').innerText = "授权失败";
+                console.error("授权失败", error, receipt);
+            });
+        }
+
+        async function revokeAccess() {
+            const accounts = await web3.eth.getAccounts();
+            const patientId = document.getElementById('authPatientId').value;
+            const userAddress = document.getElementById('userAddress').value;
+
+            console.log("Patient ID:", patientId);
+            console.log("User Address:", userAddress);
+            
+            if (!patientId || !userAddress) {
+                document.getElementById('feedback').innerText = "请完整填写所有字段";
+                return;
+            }
+
+            if (!web3.utils.isAddress(userAddress)) {
+                document.getElementById('feedback').innerText = "无效的用户地址";
+                return;
+            }
+
+            try {
+                await contract.methods.revokeAccess(patientId, userAddress).estimateGas({ from: accounts[0] });
+            } catch (error) {
+                document.getElementById('feedback').innerText = "无法估算Gas费用，可能存在错误";
+                console.error("估算Gas费用时出错:", error);
+                return;
+            }
+
+            contract.methods.revokeAccess(patientId, userAddress).send({ from: accounts[0] })
+            .on('transactionHash', function(hash){
+                document.getElementById('feedback').innerText = `交易已发送，哈希值: ${hash}`;
+            })
+            .on('receipt', function(receipt){
+                document.getElementById('feedback').innerText = "撤销成功";
+                console.log("访问权限已撤销", receipt);
+            })
+            .on('error', function(error, receipt) {
+                document.getElementById('feedback').innerText = "撤销失败";
+                console.error("撤销失败", error, receipt);
+            });
+        }
+
+        async function getPatientData() {
+            const accounts = await web3.eth.getAccounts();
+            const patientId = document.getElementById('getPatientId').value;
+
+            if (!patientId) {
+                document.getElementById('feedback').innerText = "请填写患者ID";
+                return;
+            }
+
+            try {
+                const data = await contract.methods.getPatientData(patientId).call({ from: accounts[0] });
+                console.log("患者数据:", data);
+
+                // 检查返回的数据格式是否为空
+                if (!data || data.length < 4) {
+                    console.error("返回的数据格式不正确或为空:", data);
+                    return;
+                }
+
+                // 确保年龄字段是有效的数字
+                const age = parseInt(data[1]);
+                if (isNaN(age)) {
+                    console.error("年龄字段解析错误:", data[1]);
+                    return;
+                }
+
+                // 正确解析和显示数据
+                const name = data[0];
+                const condition = data[2];
+                const encryptedData = data[3];
+
+                console.log(`Name: ${name}, Age: ${age}, Condition: ${condition}, EncryptedData: ${encryptedData}`);
+
+                // 代理重加密过程
+                const proxyKey = proxyReEncryptionKey; // 使用代理重加密密钥
+                const decryptedSymmetricKey = proxyReEncrypt(encryptedData, proxyKey); // 使用代理重加密密钥解密
+                const decryptedData = decryptData(encryptedData, decryptedSymmetricKey); // 解密数据
+                console.log("解密后的数据:", decryptedData);
+
+                // 显示数据
+                document.getElementById('result').innerHTML = `
+                    <h3>患者数据</h3>
+                    <p><strong>姓名:</strong> ${name}</p>
+                    <p><strong>年龄:</strong> ${age}</p>
+                    <p><strong>健康状况:</strong> ${condition}</p>
+                    <p><strong>加密数据:</strong> ${encryptedData}</p>
+                    <p><strong>解密后的数据:</strong> ${decryptedData}</p>
+                `;
+            } catch (error) {
+                console.error("访问数据时出错:", error);
+                document.getElementById('feedback').innerText = `访问数据时出错: ${error.message}`;
+            }
+        }
+
+        window.onload = function() {
+            generateProxyReEncryptionKey();
+        };
+    </script>
+</body>
+</html>
